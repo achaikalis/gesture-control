@@ -3,11 +3,12 @@
 */
 
 #include "main.h"
-#include "Arduino_BMI270_BMM150.h"
 
 #include <BasicLinearAlgebra.h>
 #include <ReefwingAHRS.h>
 #include <Reefwing_xIMU3.h>
+
+#include "Arduino_BMI270_BMM150.h"
 
 ReefwingAHRS ahrs;
 Reefwing_xIMU3 rx;
@@ -21,11 +22,15 @@ unsigned long previousMillis = 0;
 float deltaT = 0;
 long now = 0, lastUpdate = 0;
 
-BLA::Matrix<3,3> A = {1.024214, 0.001741, -0.005501, 0.001741, 1.016293, 0.002423, -0.005501, 0.002423, 1.056541};
-BLA::Matrix<3>   b = {-44.098118, 12.418187, -22.342269};
+BLA::Matrix<3, 3> A_accel = {0.000031, 0,         -0.000002, 0,       2.500838,
+                             0,        -0.000002, 0,         2.500838};
+BLA::Matrix<3> b_accel = {27854.598976, 0.023025, 0.501215};
+
+BLA::Matrix<3, 3> A_mag = {0.001119, -0.000005, 0.000005, -0.000005, 0.001062,
+                           0.000025, 0.000005, 0.000025,  0.001020};
+BLA::Matrix<3> b_mag = {-30.293799, 12.002223, 6.093839};
 
 void setup() {
-  
   /* AHRS Initialisation and Parameters */
   ahrs.begin();
 
@@ -37,7 +42,7 @@ void setup() {
 
   ahrs.setDeclination(4.89);
 
-  Serial.begin(115200);
+  Serial.begin(11520);
 
   while (!Serial);
 
@@ -47,131 +52,141 @@ void setup() {
     rx.sendNotification("Connection with xIMU3 GUI has been established!");
 
   } else {
-
     rx.sendError("Failed to initialize IMU!");
 
     rx.sendError("Failed to establish connection with xIMU3 GUI.");
 
     while (1);
+  }
+}
 
+void loop() {
+  if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable() &&
+      IMU.magneticFieldAvailable()) {
+    IMU.readAcceleration(sa.ax, sa.ay, sa.az);
+    IMU.readGyroscope(sa.gx, sa.gy, sa.gz);
+    IMU.readMagneticField(sa.mx, sa.my, sa.mz);
   }
 
-  void loop() {
+  // Serial.print(sa.mx, 4);
+  // Serial.print(",");
 
-    if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable() && IMU.magneticFieldAvailable()) {
-      IMU.readAcceleration(sa.ax, sa.ay, sa.az);
-      IMU.readGyroscope(sa.gx, sa.gy, sa.gz);
-      IMU.readMagneticField(sa.mx, sa.my, sa.mz);
-    }
+  // Serial.print(sa.my, 4);
+  // Serial.print(",");
 
-    BLA::Matrix<3> accelerometer_raw = {sa.mx, sa.my, sa.mz}; 
-    BLA::Matrix<3> magnetometer_raw  = {sa.mx, sa.my, sa.mz};
+  // Serial.println(sa.mz, 4);
 
-    BLA::Matrix<3> accelerometer_cal = A * (accelerometer_raw - b);
-    BLA::Matrix<3> magnetometer_cal  = A * (magnetometer_raw - b);
+  BLA::Matrix<3> accelerometer_raw = {sa.mx, sa.my, sa.mz};
+  BLA::Matrix<3> magnetometer_raw = {sa.mx, sa.my, sa.mz};
 
-    sa.ax = accelerometer_cal(0);
-    sa.ay = accelerometer_cal(1);
-    sa.az = accelerometer_cal(2);
+  BLA::Matrix<3> accelerometer_cal = A_accel * (accelerometer_raw - b_accel);
+  BLA::Matrix<3> magnetometer_cal = A_mag * (magnetometer_raw - b_mag);
 
-    sa.mx = magnetometer_cal(0);
-    sa.my = magnetometer_cal(1);
-    sa.mz = magnetometer_cal(2);
+  sa.gTimeStamp = millis();
+  sa.mTimeStamp = millis();
 
-    ahrs.setData(sa, true);
-    ahrs.update();
+  sa.ax = accelerometer_cal(0);
+  sa.ay = accelerometer_cal(1);
+  sa.az = accelerometer_cal(2);
 
-    ahrs.mahonyUpdate(sa, getDeltaUpdate());
+  sa.mx = magnetometer_cal(0);
+  sa.my = magnetometer_cal(1);
+  sa.mz = magnetometer_cal(2);
 
-    Quaternion q = ahrs.getQuaternion();
+  ahrs.setData(sa, true);
+  ahrs.update();
 
-    if (millis() - previousMillis >= displayPeriod) {
-      
-      /* ( Inertial Data ) */
+  ahrs.mahonyUpdate(sa, getDeltaUpdate());
+  ahrs.updateEulerAngles(getDeltaUpdate());
 
-      Serial.print("I,");
+  Quaternion q = ahrs.getQuaternion();
+  q.timeStamp = millis();
 
-      Serial.print(sa.gTimeStamp);
-      Serial.print(",");
-      
-      Serial.print(sa.gx, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.gy, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.gz, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.ax, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.ay, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.az, 4);
-      Serial.print("\r\n");
+  if (millis() - previousMillis >= displayPeriod) {
+    /* ( Inertial Data ) */
 
-      /* ( Magnetometer ) */
+    Serial.print("I,");
 
-      Serial.print("M,");
+    Serial.print(sa.gTimeStamp);
+    Serial.print(",");
 
-      Serial.print(sa.mTimeStamp);
-      Serial.print(",");
+    Serial.print(sa.gx, 4);
+    Serial.print(",");
 
-      Serial.print(sa.mx, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.my, 4);
-      Serial.print(",");
-      
-      Serial.print(sa.mz, 4);
-      Serial.print("\r\n");
+    Serial.print(sa.gy, 4);
+    Serial.print(",");
 
-      /* ( Euler Angles ) */
+    Serial.print(sa.gz, 4);
+    Serial.print(",");
 
-      Serial.print("A,");
-      
-      Serial.print(ahrs.angles.timeStamp(), 2); 
-      Serial.print(",");
+    Serial.print(sa.ax, 4);
+    Serial.print(",");
 
-      Serial.print(ahrs.angles.roll, 2);
-      Serial.print(",");
+    Serial.print(sa.ay, 4);
+    Serial.print(",");
 
-      Serial.print(ahrs.angles.pitch, 2);
-      Serial.print(",");
+    Serial.print(sa.az, 4);
+    Serial.print("\r\n");
 
-      Serial.print(ahrs.angles.yaw, 2);
-      Serial.print("\r\n");
+    /* ( Magnetometer ) */
 
-      /* ( Quaternions ) */
+    Serial.print("M,");
 
-      Serial.print("Q,");
+    Serial.print(sa.mTimeStamp);
+    Serial.print(",");
 
-      Serial.print(q.timeStamp);
-      Serial.print(",");
+    Serial.print(sa.mx, 4);
+    Serial.print(",");
 
-      Serial.print(q.q0);
-      Serial.print(",");
+    Serial.print(sa.my, 4);
+    Serial.print(",");
 
-      Serial.print(q.q1);
-      Serial.print(",");
+    Serial.print(sa.mz, 4);
+    Serial.print("\r\n");
 
-      Serial.print(q.q2);
-      Serial.print(",");
+    /* ( Euler Angles ) */
 
-      Serial.print(q.q3);
-      Serial.print("\r\n");
+    Serial.print("A,");
 
-      previousMillis = millis();
-      delay(1000);
+    Serial.print(ahrs.angles.timeStamp, 2);
+    Serial.print(",");
 
-    }
+    Serial.print(ahrs.angles.roll, 2);
+    Serial.print(",");
+
+    Serial.print(ahrs.angles.pitch, 2);
+    Serial.print(",");
+
+    Serial.print(ahrs.angles.yaw, 2);
+    Serial.print("\r\n");
+
+    /* ( Quaternions ) */
+
+    Serial.print("Q,");
+
+    Serial.print(q.timeStamp);
+    Serial.print(",");
+
+    Serial.print(q.q0);
+    Serial.print(",");
+
+    Serial.print(q.q1);
+    Serial.print(",");
+
+    Serial.print(q.q2);
+    Serial.print(",");
+
+    Serial.print(q.q3);
+    Serial.print("\r\n");
+
+    previousMillis = millis();
+    delay(100);
   }
+}
 
-  float getDeltaUpdate() {
-    now = micros();
-    deltaT = ((now - lastUpdate) / 1000000.0f);
-    lastUpdate = now;
-    return deltaT;
-  }
+float getDeltaUpdate() {
+  now = micros();
+  deltaT = ((now - lastUpdate) / 1000000.0f);
+  lastUpdate = now;
+  return deltaT;
+}
