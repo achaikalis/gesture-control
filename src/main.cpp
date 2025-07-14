@@ -6,78 +6,27 @@
 #include "MPU9250/QuaternionFilter.h"
 
 #include <BasicLinearAlgebra.h>
-
 #include <Reefwing_xIMU3.h>
 
 MPU9250 imu;
 Reefwing_xIMU3 rx;
 NetworkAnnouncement networkAnnouncement;
 
-struct SensorData {
-  /* Accelerometer Raw Data in g */
-  float ax, ay, az;  
-  /* Gyroscope Raw Data in Degrees per Second */
-  float gx, gy, gz;
-  /* Magnetometer Raw Data in uT */  
-  float mx, my, mz;  
-  /* Accelerometer, Gyroscope & Magnetometer Timestamps in us */
-  uint32_t aTimeStamp, gTimeStamp, mTimeStamp;
-} sa;
-
-struct LinearAcceleration {
-  /* Linear Acceleration X Component in m/s^2 */
-  float linear_ax;
-  /* Linear Acceleration Y Component in m/s^2 */
-  float linear_ay;
-  /* Linear Acceleration Z Component in m/s^2 */
-  float linear_az;
-  /* Linear Acceleration Reading Timestamp in us */
-  uint32_t laTimestamp;
-} la;
-
-struct EulerAngles {
-  float roll, pitch, yaw;
-  /* Euler Angles Reading Timestamp in us */
-  uint32_t eaTimestamp;
-} ea;
-
-struct Quaternion {
-  /* Quaternion W Component */
-  float q0;
-  /* Quaternion X Component */
-  float q1;
-  /* Quaternion Y Component */
-  float q2;
-  /* Quaternion Z Component */
-  float q3;
-  /* Quaternion Reading Timestamp in us */
-  uint32_t qTimeStamp;
-} q;
-
-struct TemperatureData {
-  /* Temperature in Degrees Centigrade */
-  float temperature;
-  /* Temperature Reading Timestamp in us */
-  uint32_t timeStamp;
-} td;
+_Quaternion q;
+_SensorData sa;
+_EulerAngles ea;
+_TemperatureData td;
+_LinearAcceleration la;
 
 const long displayPeriod = 100;
 unsigned long previousMillis = 0;
 
-float deltaT = 0;
-long now = 0, lastUpdate = 0;
-
 /* Accelerometer, Gyroscope & Magnetometer Biases */
-BLA::Matrix<3, 3> A_accel = {0.000031, 0,         -0.000002, 0,       2.500838,
-                             0,        -0.000002, 0,         2.500838};
-BLA::Matrix<3> b_accel = {27854.598976, 0.023025, 0.501215};
+BLA::Matrix<3> b_accel = {-36.69, 39.03, -77.72};
+BLA::Matrix<3> b_gyro  = {4.14, -1.31, -0.23};
 
-BLA::Matrix<3, 3> A_gyro = {};
-BLA::Matrix<3, 3> b_gyro = {0, 0, 0};
-
-BLA::Matrix<3, 3> A_mag = {0.001119, -0.000005, 0.000005, -0.000005, 0.001062,
-                           0.000025, 0.000005,  0.000025, 0.001020};
-BLA::Matrix<3> b_mag = {-30.293799, 12.002223, 6.093839};
+BLA::Matrix<3> b_mag   = {244.08, 376.44, 393.14};
+BLA::Matrix<3> s_mag   = {1.24, 0.93, 0.90};
 
 void setup() {
   Serial.begin(11520);
@@ -87,6 +36,9 @@ void setup() {
 
   /* Set Custom Settings Profile for the MPU9250 */
   MPU9250Setting settings;
+
+  /* Set Calibration Flag */
+  bool enableCalibration = false;
 
   /* Accelerometer Configuration */
   settings.accel_fs_sel   = ACCEL_FS_SEL::A16G;  
@@ -110,20 +62,25 @@ void setup() {
   /* Enhance AHRS with Temperature Readings (Degrees Centigrade) */
   imu.ahrs(true);
 
+  /* Enable Verbose Output for the Calibration procedure */
+  imu.verbose(true);
+
   /* Set Sensor Fusion Filter and Iterations */
   imu.selectFilter(QuatFilterSel::MAHONY);
-  imu.setFilterIterations(20);
+  imu.setFilterIterations(40);
 
   /* Set Biases */
   imu.setAccBias(b_accel(0), b_accel(1), b_accel(2));
-  imu.setMagBias(b_mag(0), b_mag(1), b_mag(2));
   imu.setGyroBias(b_gyro(0),  b_gyro(1),  b_gyro(2));
+  
+  imu.setMagBias(b_mag(0), b_mag(1), b_mag(2));
+  imu.setMagScale(s_mag(0), s_mag(1), s_mag(2));
 
   /* Set Magnetic Declination */
   imu.setMagneticDeclination(4.89);
 
   while (!Serial);
-
+  
   if (imu.setup(0x68, settings)) {
 
     rx.sendNotification("IMU has been initialized successfully!");
@@ -138,10 +95,13 @@ void setup() {
     while (1);
 
   }
+
+  if (enableCalibration) { fullCalibration(); }
+
 }
 
 void loop() {
-  if (imu.isConnected && imu.update()) {
+  if (imu.isConnected() && imu.update()) {
 
     sa.ax = imu.getAccX();
     sa.ay = imu.getAccY();
@@ -180,6 +140,7 @@ void loop() {
   q.qTimeStamp = micros();
 
   /* millis() - previousMillis >= displayPeriod */
+  // if (millis() - previousMillis >= displayPeriod)
   if (millis() > previousMillis + 25) {
     
     /* ( Inertial Data --> { Accelerometer, Gyroscope} ) */
@@ -285,9 +246,71 @@ void loop() {
   }
 }
 
-float getDeltaUpdate() {
-  now = micros();
-  deltaT = ((now - lastUpdate) / 1000000.0f);
-  lastUpdate = now;
-  return deltaT;
+void fullCalibration() {
+  
+  /* Accelerometer & Gyroscope Calibration */
+  Serial.println(" ====== MPU9250 Accelerometer & Gyroscope Calibration (in 5 sec) ======");
+  Serial.println("Please keep the device still on the flat plane.");
+  delay(5000);
+
+  imu.calibrateAccelGyro();
+
+  /* Magnetometer Calibration */
+  Serial.println(" ====== Magnetometer Calibration (in 5 sec) ======");
+  delay(5000);
+
+  imu.calibrateMag();
+
+  /* Output the Resulting Normalized Biases of the IMU & Magnetometer */
+  normalizeBiases();
+  imu.verbose(false);
+
+}
+
+void normalizeBiases() {
+  
+  Serial.println(" === Inertial Measurement Unit and Magnetometer Biases ===");
+  Serial.println("Accelerometer Bias [g]: ");
+  
+  Serial.print(imu.getAccBiasX() * 1000.f / (float)MPU9250::CALIB_ACCEL_SENSITIVITY);
+  Serial.print(", ");
+  
+  Serial.print(imu.getAccBiasY() * 1000.f / (float)MPU9250::CALIB_ACCEL_SENSITIVITY);
+  Serial.print(", ");
+  
+  Serial.print(imu.getAccBiasZ() * 1000.f / (float)MPU9250::CALIB_ACCEL_SENSITIVITY);
+  Serial.println();
+
+  Serial.println("Gyroscope Bias [deg/s]: ");
+  
+  Serial.print(imu.getGyroBiasX() / (float)MPU9250::CALIB_GYRO_SENSITIVITY);
+  Serial.print(", ");
+  
+  Serial.print(imu.getGyroBiasY() / (float)MPU9250::CALIB_GYRO_SENSITIVITY);
+  Serial.print(", ");
+  
+  Serial.print(imu.getGyroBiasZ() / (float)MPU9250::CALIB_GYRO_SENSITIVITY);
+  Serial.println();
+
+  Serial.println("Magnetometer Bias [mG]: ");
+  Serial.print(imu.getMagBiasX());
+  Serial.print(", ");
+  
+  Serial.print(imu.getMagBiasY());
+  Serial.print(", ");
+  
+  Serial.print(imu.getMagBiasZ());
+  Serial.println();
+
+  Serial.println("Magnetometer Scale [uT]: ");
+  Serial.print(imu.getMagScaleX());
+
+  Serial.print(", ");
+  Serial.print(imu.getMagScaleY());
+
+  Serial.print(", ");
+  Serial.print(imu.getMagScaleZ());
+
+  Serial.println();
+
 }
